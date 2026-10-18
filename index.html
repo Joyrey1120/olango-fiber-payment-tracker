@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-$rawUrl = 'https://raw.githubusercontent.com/Joyrey1120/olango-fiber-payment-tracker/main/index.html'
+$rawUrl = 'https://raw.githubusercontent.com/Joyrey1120/olango-fiber-payment-tracker/3f8386ed6348f970fcd806ffb1e5a0e0f76ad6eb/index.html'
 $outPath = Join-Path (Get-Location) 'index_updated.html'
 
 try {
@@ -59,8 +59,4 @@ try {
 } catch {
     Write-Error "Could not write the updated file: $($_.Exception.Message)"
     exit 1
-
-function resetData(){if(!confirm('This permanently deletes all local demo customers, payments and expenses. Download a backup first. Continue?'))return;state={customers:[],payments:[],expenses:[]};save();render()}
-render();
-</script>
-</body></html>
+}
