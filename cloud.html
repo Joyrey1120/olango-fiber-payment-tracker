@@ -19,6 +19,216 @@ function customerView(){return
 function paymentView(){return '<div class="panel"><h2>Record payment</h2><form id="paymentForm"><div class="formgrid"><div class="field"><label>Customer</label><select name="customer_id" required><option value="">Choose customer</option>'+customers.filter(c=>c.status!=='inactive').map(c=>'<option value="'+c.id+'">'+esc(c.name)+' · '+esc(c.service_area||'')+'</option>').join('')+'</select></div><div class="field"><label>Date</label><input name="payment_date" type="date" value="'+today()+'" required></div><div class="field"><label>Amount (₱)</label><input name="amount" type="number" min=".01" step=".01" required></div><div class="field"><label>Method</label><select name="method"><option>Cash</option><option>GCash</option><option>Bank transfer</option><option>Other</option></select></div><div class="field"><label>Reference</label><input name="reference_no"></div><div class="field"><label>Notes</label><input name="notes"></div></div><div class="actions"><button>Save payment to shared database</button></div></form></div>'}
 function historyView(){return '<div class="panel"><h2>Payment history</h2><p>Showing payments permitted for this account.</p><div class="tablewrap"><table><thead><tr><th>Date</th><th>Receipt</th><th>Customer</th><th>Collector</th><th>Method</th><th>Amount</th></tr></thead><tbody>'+payments.map(p=>'<tr><td>'+esc(p.payment_date)+'</td><td>'+esc(p.receipt_no||'')+'</td><td>'+esc(customerName(p.customer_id))+'</td><td>'+(p.collector_user_id===user.id?'You':(isAdmin()?'Staff':'—'))+'</td><td>'+esc(p.method||'')+'</td><td>'+money(p.amount)+'</td></tr>').join('')+'</tbody></table></div></div>'}
 function expenseView(){return '<div class="panel"><h2>Expenses (admin only)</h2><form id="expenseForm"><div class="formgrid"><div class="field"><label>Date</label><input name="date" type="date" value="'+today()+'" required></div><div class="field"><label>Category</label><input name="category" required></div><div class="field"><label>Description</label><input name="description" required></div><div class="field"><label>Amount (₱)</label><input name="amount" type="number" min=".01" step=".01" required></div><div class="field"><label>Method</label><input name="method" value="Cash"></div><div class="field"><label>Notes</label><input name="notes"></div></div><div class="actions"><button>Save expense</button></div></form><div class="tablewrap"><table><thead><tr><th>Date</th><th>Category</th><th>Description</th><th>Amount</th></tr></thead><tbody>'+expenses.map(e=>'<tr><td>'+esc(e.expense_date)+'</td><td>'+esc(e.category)+'</td><td>'+esc(e.description)+'</td><td>'+money(e.amount)+'</td></tr>').join('')+'</tbody></table></div></div>'}
+
+let csvPreviewRows = null;
+
+function parseCsvText(text) {
+  const rows = [];
+  let row = [], cell = "", quoted = false;
+
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+
+    if (quoted) {
+      if (ch === '"' && text[i + 1] === '"') {
+        cell += '"';
+        i++;
+      } else if (ch === '"') {
+        quoted = false;
+      } else {
+        cell += ch;
+      }
+    } else if (ch === '"') {
+      quoted = true;
+    } else if (ch === ',') {
+      row.push(cell);
+      cell = '';
+    } else if (ch === '\n') {
+      row.push(cell.replace(/\r$/, ''));
+      rows.push(row);
+      row = [];
+      cell = '';
+    } else {
+      cell += ch;
+    }
+  }
+
+  if (cell.length || row.length) {
+    row.push(cell.replace(/\r$/, ''));
+    rows.push(row);
+  }
+
+  return rows.filter(r => r.some(v => String(v).trim()));
+}
+
+function csvKey(value) {
+  return String(value || '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
+function csvDueDay(value) {
+  const s = String(value || '').trim();
+  if (!s) return 1;
+
+  // ISO date: YYYY-MM-DD
+  let m = s.match(/^\d{4}-\d{1,2}-(\d{1,2})/);
+  if (m) return Number(m[1]) >= 1 && Number(m[1]) <= 31
+    ? Number(m[1]) : null;
+
+  // Excel-style date: M/D/YYYY or MM/DD/YYYY
+  m = s.match(/^(\d{1,2})\/(\d{1,2})\/\d{2,4}$/);
+  if (m) return Number(m[2]) >= 1 && Number(m[2]) <= 31
+    ? Number(m[2]) : null;
+
+  m = s.match(/\d{1,2}/);
+  if (!m) return null;
+
+  const day = Number(m[0]);
+  return day >= 1 && day <= 31 ? day : null;
+}
+
+function csvMoney(value) {
+  const s = String(value ?? '').replace(/[₱,$\s]/g, '');
+  if (!s || !/^\d+(\.\d{1,2})?$/.test(s)) return null;
+  const n = Number(s);
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
+async function importCustomersCsv() {
+  const status = document.getElementById('csvImportStatus');
+  const file = document.getElementById('customerCsv')?.files?.[0];
+
+  if (!isAdmin()) {
+    status.textContent = 'Admin access is required.';
+    return;
+  }
+
+  if (!csvPreviewRows) {
+    if (!file) {
+      status.textContent = 'Choose a CSV file first.';
+      return;
+    }
+
+    try {
+      const rows = parseCsvText(await file.text());
+      if (rows.length < 2) throw new Error('CSV has no customer rows.');
+
+      const headers = rows[0].map(csvKey);
+      const find = (...names) =>
+        names.map(n => headers.indexOf(csvKey(n))).find(i => i >= 0);
+
+      const ix = {
+        name: find('CLIENT', 'NAME', 'CUSTOMER'),
+        address: find('ADDRESS'),
+        contact: find('CONTACT NO', 'CONTACT NUMBER', 'PHONE'),
+        due: find('DUE DATE', 'DUE DAY'),
+        amount: find('DUE AMOUNT', 'MONTHLY FEE')
+      };
+
+      if (ix.name == null || ix.amount == null) {
+        throw new Error('Required headers: CLIENT and DUE AMOUNT.');
+      }
+
+      const existing = new Set(
+        customers.map(c =>
+          String(c.name || '').trim().toLowerCase() + '|' +
+          String(c.contact_no || '').replace(/\D/g, '')
+        )
+      );
+      const seen = new Set();
+      const ready = [];
+      const problems = [];
+      let duplicates = 0;
+
+      rows.slice(1).forEach((r, index) => {
+        const name = String(r[ix.name] || '').trim();
+        const address = ix.address == null ? '' : String(r[ix.address] || '').trim();
+        const contact = ix.contact == null ? '' : String(r[ix.contact] || '').trim();
+        const amount = csvMoney(r[ix.amount]);
+        const due = ix.due == null ? 1 : csvDueDay(r[ix.due]);
+
+        if (!name || amount === null || due === null) {
+          problems.push('Row ' + (index + 2) + ': check name, amount, and due date.');
+          return;
+        }
+
+        const key = name.toLowerCase() + '|' + contact.replace(/\D/g, '');
+        if (existing.has(key) || seen.has(key)) {
+          duplicates++;
+          return;
+        }
+        seen.add(key);
+
+        ready.push({
+          customer_code: 'OFN-CSV-' + crypto.randomUUID(),
+          name,
+          address: address || null,
+          contact_no: contact || null,
+          service_area: 'Unassigned',
+          monthly_fee: amount,
+          due_day: due,
+          status: 'active'
+        });
+      });
+
+      if (!ready.length) {
+        throw new Error('No new valid customers found.');
+      }
+
+      csvPreviewRows = ready;
+      status.textContent =
+        'Preview: ' + ready.length + ' new customers; ' +
+        duplicates + ' duplicates skipped; ' +
+        problems.length + ' rows need correction. ' +
+        'First names: ' + ready.slice(0, 5).map(c => c.name).join(', ') +
+        '. Click Confirm import to save.' +
+        (problems.length ? ' Correct these rows before importing: ' +
+          problems.slice(0, 3).join(' ') : '');
+
+      const btn = document.querySelector(
+        'button[onclick="importCustomersCsv()"]'
+      );
+      if (btn) btn.textContent = 'Confirm import ' + ready.length + ' customers';
+      return;
+    } catch (err) {
+      status.textContent = 'CSV preview failed: ' + err.message;
+      return;
+    }
+  }
+
+  if (!confirm('Import ' + csvPreviewRows.length +
+      ' customers into the shared database?')) return;
+
+  try {
+    const ready = csvPreviewRows;
+    status.textContent = 'Importing customers…';
+
+    // Small batches limit the impact if a batch fails.
+    let saved = 0;
+    for (let i = 0; i < ready.length; i += 25) {
+      const { error } = await db.from('customers').insert(ready.slice(i, i + 25));
+      if (error) {
+        throw new Error(saved + ' saved before failure: ' + error.message);
+      }
+      saved += Math.min(25, ready.length - i);
+    }
+
+    csvPreviewRows = null;
+    document.getElementById('customerCsv').value = '';
+    const btn = document.querySelector(
+      'button[onclick="importCustomersCsv()"]'
+    );
+    if (btn) btn.textContent = 'Import CSV';
+
+    await refreshData();
+    setTab('customers');
+    status.textContent = 'Import successful: ' + saved + ' customers saved.';
+  } catch (err) {
+    csvPreviewRows = null;
+    status.textContent =
+      'Import stopped: ' + err.message +
+      '. Check the customer list before retrying.';
+  }
+}
 document.addEventListener('submit',async e=>{if(e.target.id==='customerForm'){e.preventDefault();if(!isAdmin())return;const f=new FormData(e.target),row={customer_code:'OFN-'+Date.now().toString(36).toUpperCase(),name:String(f.get('name')).trim(),contact_no:String(f.get('contact_no')||'').trim()||null,address:String(f.get('address')||'').trim()||null,service_area:String(f.get('service_area')||'Unassigned'),monthly_fee:Number(f.get('monthly_fee')),due_day:Number(f.get('due_day')),status:'active'};try{const {error}=await db.from('customers').insert(row);if(error)throw error;e.target.reset();await refreshData();setTab('customers');msg('Customer saved to shared database.')}catch(err){msg('Customer was not saved: '+err.message,true)}}if(e.target.id==='paymentForm'){e.preventDefault();const f=new FormData(e.target),row={receipt_no:'OFN-'+Date.now().toString(36).toUpperCase(),customer_id:String(f.get('customer_id')),payment_date:String(f.get('payment_date')),amount:Number(f.get('amount')),method:String(f.get('method')||'Cash'),reference_no:String(f.get('reference_no')||'').trim()||null,collector_user_id:user.id,notes:String(f.get('notes')||'').trim()||null};try{const {error}=await db.from('payments').insert(row);if(error)throw error;e.target.reset();await refreshData();setTab('history');msg('Payment saved to shared database. Receipt: '+row.receipt_no)}catch(err){msg('Payment was not saved: '+err.message,true)}}if(e.target.id==='expenseForm'){e.preventDefault();if(!isAdmin())return;const f=new FormData(e.target),row={expense_date:String(f.get('date')),category:String(f.get('category')),description:String(f.get('description')),amount:Number(f.get('amount')),method:String(f.get('method')||'Cash'),recorded_by:user.id,notes:String(f.get('notes')||'').trim()||null};try{const {error}=await db.from('expenses').insert(row);if(error)throw error;e.target.reset();await refreshData();setTab('expenses');msg('Expense saved to shared database.')}catch(err){msg('Expense was not saved: '+err.message,true)}}});
 (async()=>{if(!window.SUPABASE_CONFIG?.url||!window.SUPABASE_CONFIG?.publishableKey){$('loginStatus').textContent='Supabase configuration missing. Check supabase-config.js.';return}try{const {data:{session}}=await db.auth.getSession();if(session)await startApp()}catch(err){$('loginStatus').textContent=err.message}})();
 </script></body></html>
