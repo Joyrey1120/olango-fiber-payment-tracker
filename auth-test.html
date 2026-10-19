@@ -1,0 +1,139 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Olango Fiber - Login Test</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      background: #f3f6fa;
+      color: #192b3b;
+      max-width: 480px;
+      margin: 50px auto;
+      padding: 20px;
+    }
+    section {
+      background: white;
+      padding: 24px;
+      border-radius: 14px;
+      border: 1px solid #dfe7ef;
+    }
+    input, button {
+      box-sizing: border-box;
+      width: 100%;
+      padding: 12px;
+      margin: 8px 0;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+    input { border: 1px solid #cbd7e2; }
+    button {
+      border: 0;
+      background: #10243a;
+      color: white;
+      cursor: pointer;
+    }
+    #status {
+      overflow-wrap: anywhere;
+      line-height: 1.5;
+    }
+  </style>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <script src="./supabase-config.js"></script>
+</head>
+<body>
+  <section>
+    <h1>Olango Fiber Network</h1>
+    <h2>Admin Login Test</h2>
+    <p>Use the admin account you created in Supabase.</p>
+
+    <form id="loginForm">
+      <label for="email">Admin email</label>
+      <input id="email" type="email" required autocomplete="username">
+
+      <label for="password">Password</label>
+      <input id="password" type="password" required
+             autocomplete="current-password">
+
+      <button id="loginButton" type="submit">Test Login</button>
+    </form>
+
+    <button id="logoutButton" type="button" hidden>
+      Sign Out
+    </button>
+
+    <p id="status" role="status">Ready to test.</p>
+  </section>
+
+  <script>
+    const client = window.supabase.createClient(
+      window.SUPABASE_CONFIG.url,
+      window.SUPABASE_CONFIG.publishableKey
+    );
+
+    const status = document.getElementById("status");
+    const form = document.getElementById("loginForm");
+    const loginButton = document.getElementById("loginButton");
+    const logoutButton = document.getElementById("logoutButton");
+
+    form.addEventListener("submit", async function(event) {
+      event.preventDefault();
+      loginButton.disabled = true;
+      status.textContent = "Checking login...";
+
+      try {
+        const { data, error } = await client.auth.signInWithPassword({
+          email: document.getElementById("email").value.trim(),
+          password: document.getElementById("password").value
+        });
+
+        if (error) throw error;
+
+        const { data: profile, error: profileError } = await client
+          .from("profiles")
+          .select("full_name, role, active")
+          .eq("user_id", data.user.id)
+          .single();
+
+        if (profileError) {
+          status.textContent =
+            "Login succeeded, but profile lookup failed: " +
+            profileError.message;
+          return;
+        }
+
+        if (!profile.active) {
+          status.textContent =
+            "Login succeeded, but this account is inactive.";
+          await client.auth.signOut();
+          return;
+        }
+
+        status.textContent =
+          "SUCCESS! Login works. Name: " + profile.full_name +
+          ". Role: " + profile.role +
+          ". Active: " + profile.active +
+          ". This is a login test only; the tracker is not yet connected.";
+
+        form.hidden = true;
+        logoutButton.hidden = false;
+      } catch (error) {
+        status.textContent = "Login test failed: " + error.message;
+      } finally {
+        loginButton.disabled = false;
+      }
+    });
+
+    logoutButton.addEventListener("click", async function() {
+      const { error } = await client.auth.signOut();
+      status.textContent = error
+        ? "Sign-out error: " + error.message
+        : "Signed out successfully. You can test again.";
+      form.hidden = false;
+      logoutButton.hidden = true;
+    });
+  </script>
+</body>
+</html>
